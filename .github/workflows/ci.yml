@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck and lint
+        run: |
+          npm run typecheck -w server
+          npm run typecheck -w web
+          npm run lint -w web
+      - name: Unit tests (server + client), no network
+        run: npm test
+      - name: Browser
+        run: npx playwright install --with-deps chromium
+      - name: E2E against a fake OpenRouter, desktop and phone
+        run: npm run e2e -w web
+        env:
+          CI: 'true'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-failures
+          path: web/test-results # screenshots and error context of failed tests
+          retention-days: 7
