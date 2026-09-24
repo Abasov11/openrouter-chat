@@ -9,6 +9,7 @@ export type Message = {
   // assistant only:
   status?: 'streaming' | 'done' | 'stopped' | 'error'
   thinking?: boolean
+  retrying?: boolean // the first model failed before answering; the server asked another
   model?: string
   finishReason?: string
   error?: ClientError
@@ -21,7 +22,7 @@ function load(): Message[] {
   try {
     const saved: Message[] = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]')
     // A reply that was streaming when the page went away is, in effect, stopped.
-    return saved.map((m) => (m.status === 'streaming' ? { ...m, status: 'stopped', thinking: false } : m))
+    return saved.map((m) => (m.status === 'streaming' ? { ...m, status: 'stopped', thinking: false, retrying: false } : m))
   } catch {
     return []
   }
@@ -85,7 +86,7 @@ export function useChat() {
       if (!pending) return
       const text = pending
       pending = ''
-      patch((m) => ({ content: m.content + text, thinking: false }))
+      patch((m) => ({ content: m.content + text, thinking: false, retrying: false }))
     }
 
     try {
@@ -94,7 +95,8 @@ export function useChat() {
           pending += event.text
           frame ||= requestAnimationFrame(flush)
         } else if (event.type === 'meta') patch(() => ({ model: event.model }))
-        else if (event.type === 'thinking') patch(() => ({ thinking: true }))
+        else if (event.type === 'thinking') patch(() => ({ thinking: true, retrying: false }))
+        else if (event.type === 'retry') patch(() => ({ retrying: true, thinking: false, model: undefined }))
         else if (event.type === 'done') {
           flush()
           patch(() => ({ status: 'done', finishReason: event.finishReason }))
@@ -102,11 +104,11 @@ export function useChat() {
       }
     } catch (err) {
       flush() // keep every token that made it
-      if (ctrl.signal.aborted) patch(() => ({ status: 'stopped', thinking: false }))
+      if (ctrl.signal.aborted) patch(() => ({ status: 'stopped', thinking: false, retrying: false }))
       else {
         const error: ClientError = err instanceof ChatError ? err.error : { code: 'network' }
         if (!(err instanceof ChatError)) console.error(err)
-        patch(() => ({ status: 'error', thinking: false, error }))
+        patch(() => ({ status: 'error', thinking: false, retrying: false, error }))
       }
     } finally {
       if (abort.current === ctrl) abort.current = null

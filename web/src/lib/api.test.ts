@@ -121,3 +121,16 @@ test('offline before sending fails fast without a request', async () => {
   expect((error as ChatError).error.code).toBe('offline')
   expect(fetchSpy).not.toHaveBeenCalled()
 })
+
+test('before the stream opens it waits longer: the server may be trying other models', async () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('fetch', (_url: string, init: RequestInit) =>
+    new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))),
+  )
+  let settled = false
+  const done = collect(streamChat(history, new AbortController().signal)).finally(() => (settled = true))
+  await vi.advanceTimersByTimeAsync(74_000)
+  expect(settled).toBe(false) // longer than the 45 s mid-stream silence budget
+  await vi.advanceTimersByTimeAsync(2_000)
+  expect(((await done).error as ChatError).error.code).toBe('timeout')
+})

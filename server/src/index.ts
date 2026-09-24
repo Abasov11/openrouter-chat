@@ -18,7 +18,7 @@ const staticRoot = process.env.NODE_ENV === 'production' && existsSync(dist) ? d
 const port = Number(process.env.PORT) || 8787
 
 createApp({
-  upstream: { apiKey, models, firstTokenTimeoutMs: 60_000, idleTimeoutMs: 30_000 },
+  upstream: { apiKey, models, firstTokenTimeoutMs: 20_000, idleTimeoutMs: 30_000 },
   staticRoot,
 }).listen(port, () => {
   console.log(`http://localhost:${port}  models: ${models.join(', ')}${staticRoot ? '' : '  (API only; run the Vite dev server for the UI)'}`)

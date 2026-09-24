@@ -13,8 +13,10 @@ export class ChatError extends Error {
   }
 }
 
-// The server writes a ping every 15 s, so this much silence means the connection is dead.
+// Once the stream is open the server writes a ping every 15 s, so this much silence means it's dead.
 const SILENCE_MS = 45_000
+// Before the stream opens the server may try up to 3 models × 20 s to first token; wait a bit longer.
+const HEADERS_MS = 75_000
 
 /**
  * POSTs the conversation and yields server events as they arrive.
@@ -29,12 +31,12 @@ export async function* streamChat(messages: ChatMessage[], signal: AbortSignal):
   signal.addEventListener('abort', onAbort, { once: true })
   let silent = false
   let timer: ReturnType<typeof setTimeout> | undefined
-  const arm = () => {
+  const arm = (ms = SILENCE_MS) => {
     clearTimeout(timer)
     timer = setTimeout(() => {
       silent = true
       ctrl.abort()
-    }, SILENCE_MS)
+    }, ms)
   }
   const fail = (err: unknown): never => {
     if (silent) throw new ChatError({ code: 'timeout' })
@@ -42,7 +44,7 @@ export async function* streamChat(messages: ChatMessage[], signal: AbortSignal):
     throw new ChatError({ code: navigator.onLine ? 'network' : 'offline' })
   }
 
-  arm()
+  arm(HEADERS_MS)
   try {
     let res: Response
     try {
@@ -61,6 +63,7 @@ export async function* streamChat(messages: ChatMessage[], signal: AbortSignal):
       throw new ChatError(body?.error?.code ? body.error : { code: 'upstream_unavailable' })
     }
 
+    arm()
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
     const parse = createSseParser()
     while (true) {
@@ -75,7 +78,7 @@ export async function* streamChat(messages: ChatMessage[], signal: AbortSignal):
       for (const { event, data } of parse(chunk.value)) {
         const payload = JSON.parse(data)
         if (event === 'error') throw new ChatError(payload)
-        const known = event === 'meta' || event === 'thinking' || event === 'delta' || event === 'done'
+        const known = ['meta', 'thinking', 'retry', 'delta', 'done'].includes(event)
         if (!known) continue
         yield { type: event, ...payload } as StreamEvent
         if (event === 'done') return

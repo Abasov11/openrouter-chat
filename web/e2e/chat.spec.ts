@@ -58,6 +58,16 @@ test('model never answers: timeout message instead of an endless spinner', async
   await expect(page.getByRole('alert')).toContainText('слишком долго молчит', { timeout: 5000 })
 })
 
+test('model fails before its first word: the UI says so and the backup model answers', async ({ page }) => {
+  await page.goto('/')
+  await ask(page, '[fallback] привет')
+  await expect(page.locator('.typing')).toContainText('Модель думает')
+  await expect(page.locator('.typing')).toContainText('спрашиваем другую')
+  await expect(lastReply(page)).toContainText('тестовый')
+  await expect(lastReply(page)).toContainText('fake/backup:free')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
+
 test('stream cut mid-answer keeps what arrived and says so', async ({ page }) => {
   await page.goto('/')
   await ask(page, '[cut] привет')

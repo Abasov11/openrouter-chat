@@ -5,15 +5,21 @@ import { createSseParser } from '../../shared/sse.ts'
 import { createApp } from './app.ts'
 
 // A fake OpenRouter: each test scripts what the upstream stream does.
-type Script = (ctl: { send: (obj: unknown) => void; raw: (s: string) => void; end: () => void }, signal: AbortSignal) => void
+// `call` is 0 for the first model asked, 1 for the retry, and so on.
+type Script = (ctl: { send: (obj: unknown) => void; raw: (s: string) => void; end: () => void }, signal: AbortSignal, call: number) => void
+type Status = { status: number; body: string; headers?: Record<string, string> }
 let script: Script = () => {}
+let upstreamCalls: { signal: AbortSignal; body: any }[] = []
 let lastUpstream: { signal: AbortSignal; body: any } | undefined
-let upstreamStatus: { status: number; body: string; headers?: Record<string, string> } | undefined
+let upstreamStatus: Status | ((call: number) => Status | undefined) | undefined
 
 const fakeFetch: typeof fetch = async (_url, init) => {
   const signal = init!.signal!
+  const call = upstreamCalls.length
   lastUpstream = { signal, body: JSON.parse(String(init!.body)) }
-  if (upstreamStatus) return new Response(upstreamStatus.body, upstreamStatus)
+  upstreamCalls.push(lastUpstream)
+  const status = typeof upstreamStatus === 'function' ? upstreamStatus(call) : upstreamStatus
+  if (status) return new Response(status.body, status)
   const enc = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
@@ -25,6 +31,7 @@ const fakeFetch: typeof fetch = async (_url, init) => {
           end: () => c.close(),
         },
         signal,
+        call,
       )
     },
   })
@@ -52,6 +59,7 @@ const patientBase = await start(60_000)
 function reset() {
   script = () => {}
   lastUpstream = undefined
+  upstreamCalls = []
   upstreamStatus = undefined
 }
 
@@ -106,6 +114,7 @@ test('upstream 429 before the stream becomes a real HTTP 429 with Retry-After', 
   assert.equal(res.status, 429)
   assert.equal(res.headers.get('retry-after'), '7')
   assert.deepEqual(await res.json(), { error: { code: 'rate_limited', retryAfterSec: 7 } })
+  assert.deepEqual(upstreamCalls.map((c) => c.body.models), [['a:free', 'b:free'], ['b:free']])
 })
 
 test('bad key does not leak upstream details to the browser', async () => {
@@ -114,6 +123,7 @@ test('bad key does not leak upstream details to the browser', async () => {
   const res = await chat()
   assert.equal(res.status, 500)
   assert.deepEqual(await res.json(), { error: { code: 'server_misconfigured' } })
+  assert.equal(upstreamCalls.length, 1) // a bad key is bad for every model: no retry
 })
 
 test('error chunk after HTTP 200 becomes an error event, partial text already sent', async () => {
@@ -126,6 +136,64 @@ test('error chunk after HTTP 200 becomes an error event, partial text already se
   const out = await events(await chat())
   assert.deepEqual(out.at(-2), { event: 'delta', data: { text: 'Нача' } })
   assert.deepEqual(out.at(-1), { event: 'error', data: { code: 'rate_limited' } })
+})
+
+test('first model 429s: the next one answers, the browser sees a normal 200 stream', async () => {
+  reset()
+  upstreamStatus = (call) => (call === 0 ? { status: 429, body: '{"error":{"code":429}}' } : undefined)
+  script = (c) => {
+    c.send(chunk('Ответ', 'stop'))
+    c.end()
+  }
+  const res = await chat()
+  assert.equal(res.status, 200)
+  const out = await events(res)
+  assert.equal(out.some((e) => e.event === 'error' || e.event === 'retry'), false)
+  assert.deepEqual(out.at(-1), { event: 'done', data: { finishReason: 'stop' } })
+})
+
+test('model fails mid-thinking (after the stream opened): retry event, then the next model answers', async () => {
+  reset()
+  script = (c, _signal, call) => {
+    if (call === 0) {
+      c.send({ model: 'a:free', choices: [{ delta: { reasoning: 'hmm' } }] })
+      c.send({ model: 'a:free', choices: [], error: { code: 504, message: 'The operation was aborted' } })
+    } else {
+      c.send({ model: 'b:free', choices: [{ delta: { content: 'Ответ' }, finish_reason: 'stop' }] })
+    }
+    c.end()
+  }
+  const out = await events(await chat())
+  assert.deepEqual(
+    out.map((e) => e.event),
+    ['meta', 'thinking', 'retry', 'meta', 'delta', 'done'],
+  )
+  assert.deepEqual(upstreamCalls[1].body.models, ['b:free'])
+})
+
+test('a model OpenRouter already fell back to is not asked twice', async () => {
+  reset()
+  script = (c) => {
+    // We asked for a, OpenRouter served b, and b failed: nobody is left to ask.
+    c.send({ model: 'b:free', choices: [{ delta: { reasoning: 'hmm' } }] })
+    c.send({ choices: [], error: { code: 504, message: 'timeout' } })
+    c.end()
+  }
+  const out = await events(await chat())
+  assert.deepEqual(out.at(-1), { event: 'error', data: { code: 'timeout' } })
+  assert.equal(upstreamCalls.length, 1)
+})
+
+test('no retry once text is on screen: the answer would change voice midway', async () => {
+  reset()
+  script = (c) => {
+    c.send(chunk('Нача'))
+    c.send({ error: { code: 504, message: 'timeout' } })
+    c.end()
+  }
+  const out = await events(await chat())
+  assert.deepEqual(out.at(-1), { event: 'error', data: { code: 'timeout' } })
+  assert.equal(upstreamCalls.length, 1)
 })
 
 test('stream cut without finish_reason is reported, not treated as done', async () => {
