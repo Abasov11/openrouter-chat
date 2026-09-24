@@ -245,3 +245,63 @@ test('rejects malformed requests without calling upstream', async () => {
   assert.equal(res.status, 400)
   assert.equal(lastUpstream, undefined)
 })
+
+test('every response carries a strict CSP and the other security headers', async () => {
+  for (const path of ['/api/health', '/api/nope']) {
+    const res = await fetch(`${base}${path}`)
+    const csp = res.headers.get('content-security-policy') ?? ''
+    assert.match(csp, /script-src 'self'(;|$)/, path) // no 'unsafe-inline', no remote scripts
+    assert.match(csp, /img-src 'self' data:(;|$)/) // no remote images: nothing to leak a chat through
+    assert.match(csp, /connect-src 'self'/)
+    assert.match(csp, /frame-ancestors 'none'/)
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff')
+    assert.equal(res.headers.get('referrer-policy'), 'no-referrer')
+  }
+})
+
+test('one client can hold only a few streams open at once; closing one frees a slot', async () => {
+  reset()
+  script = (c) => c.send(chunk('...')) // generates "forever"
+  const server = createApp({
+    upstream: { apiKey: 'k', models: ['a:free'], firstTokenTimeoutMs: 60_000, idleTimeoutMs: 60_000, fetchImpl: fakeFetch },
+    rateLimit: { limit: 1000, windowMs: 60_000 },
+    maxStreamsPerClient: 2,
+  })
+  await new Promise<void>((r) => server.listen(0, r))
+  after(() => server.close())
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+
+  const first = new AbortController()
+  const open = [await chat(undefined, first.signal, url), await chat(undefined, undefined, url)]
+  assert.deepEqual(open.map((r) => r.status), [200, 200])
+  const third = await chat(undefined, undefined, url)
+  assert.equal(third.status, 429)
+  assert.equal((await third.json()).error.code, 'too_many_requests')
+
+  first.abort()
+  await open[0].body!.cancel().catch(() => {})
+  let again: Response | undefined
+  for (let i = 0; i < 50; i++) {
+    again = await chat(undefined, undefined, url)
+    if (again.status === 200) break
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  assert.equal(again!.status, 200)
+  await again!.body!.cancel()
+  await open[1].body!.cancel()
+})
+
+test('malformed %-escape in a static path is a 400, not a server error', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const root = mkdtempSync(join(tmpdir(), 'static-'))
+  writeFileSync(join(root, 'index.html'), '<!doctype html>')
+  const server = createApp({ upstream: { apiKey: 'k', models: ['a:free'], firstTokenTimeoutMs: 1, idleTimeoutMs: 1 }, staticRoot: root })
+  await new Promise<void>((r) => server.listen(0, r))
+  after(() => server.close())
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  assert.equal((await fetch(`${url}/%E0%A4%A`)).status, 400)
+  assert.equal((await fetch(`${url}/..%2f..%2fetc%2fpasswd`)).status, 200) // traversal falls back to the app
+  assert.equal(await (await fetch(`${url}/..%2f..%2fetc%2fpasswd`)).text(), '<!doctype html>')
+})

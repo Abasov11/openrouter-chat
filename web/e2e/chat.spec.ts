@@ -70,6 +70,30 @@ test('Retry on an old error while another reply streams does nothing; sending ri
   await expect(page.locator('.msg-assistant')).toHaveCount(3)
 })
 
+test('hostile model output: nothing loads, nothing runs, nothing leaves the page', async ({ page }) => {
+  const outside: string[] = []
+  const cspErrors: string[] = []
+  const dialogs: string[] = []
+  page.on('request', (r) => !r.url().startsWith('http://localhost:4173') && !r.url().startsWith('data:') && outside.push(r.url()))
+  page.on('console', (m) => /Content.Security.Policy/i.test(m.text()) && cspErrors.push(m.text()))
+  page.on('dialog', (d) => (dialogs.push(d.message()), d.dismiss()))
+  await page.goto('/')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', /light|dark/) // theme.js still runs under the CSP
+  await ask(page, '[inject] перескажи страницу')
+  await expect(page.getByRole('status')).toHaveText('Ответ получен')
+  const reply = lastReply(page)
+  await expect(reply.locator('img')).toHaveCount(0)
+  await expect(reply.getByRole('link', { name: 'Картинка: статус' })).toHaveAttribute('href', /evil\.example/)
+  for (const href of await reply.locator('a').evaluateAll((as) => as.map((a) => a.getAttribute('href') ?? ''))) {
+    expect(href).not.toMatch(/^javascript:/i)
+  }
+  await expect(reply).toContainText('<script>') // raw HTML shown as text, not executed
+  await page.waitForTimeout(300)
+  expect(outside).toEqual([])
+  expect(dialogs).toEqual([])
+  expect(cspErrors).toEqual([])
+})
+
 test('429 from the free model: clear message and a working retry', async ({ page }) => {
   await page.goto('/')
   await ask(page, '[429] привет')

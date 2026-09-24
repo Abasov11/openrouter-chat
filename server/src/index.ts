@@ -8,7 +8,7 @@ if (!apiKey) {
   process.exit(1)
 }
 
-const models = (process.env.OPENROUTER_MODELS ?? 'nvidia/nemotron-3-super-120b-a12b:free,nex-agi/nex-n2.5-mini:free')
+const models = (process.env.OPENROUTER_MODELS ?? 'nvidia/nemotron-3-super-120b-a12b:free,nex-agi/nex-n2.5-mini:free,google/gemma-4-31b-it:free')
   .split(',')
   .map((m) => m.trim())
   .filter(Boolean)

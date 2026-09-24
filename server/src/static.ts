@@ -15,7 +15,13 @@ const TYPES: Record<string, string> = {
 
 /** Serves the built client from `root`; unknown paths get index.html (single page app). */
 export async function serveStatic(root: string, req: IncomingMessage, res: ServerResponse) {
-  const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
+  let pathname: string
+  try {
+    pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname)
+  } catch {
+    res.writeHead(400).end() // malformed %-escape
+    return
+  }
   let file = normalize(join(root, pathname))
   if (!file.startsWith(root + sep)) file = join(root, 'index.html') // path traversal → just the app
   let body: Buffer
