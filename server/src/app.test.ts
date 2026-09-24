@@ -126,6 +126,30 @@ test('bad key does not leak upstream details to the browser', async () => {
   assert.equal(upstreamCalls.length, 1) // a bad key is bad for every model: no retry
 })
 
+test('a model gone from the catalog is skipped, the next one answers', async () => {
+  reset()
+  // What OpenRouter really sends for a removed :free model (checked live 24.09).
+  upstreamStatus = (call) =>
+    call === 0 ? { status: 400, body: '{"error":{"message":"a:free is not a valid model ID","code":400}}' } : undefined
+  script = (c) => {
+    c.send({ model: 'b:free', choices: [{ delta: { content: 'Ответ' }, finish_reason: 'stop' }] })
+    c.end()
+  }
+  const res = await chat()
+  assert.equal(res.status, 200)
+  assert.deepEqual((await events(res)).at(-1), { event: 'done', data: { finishReason: 'stop' } })
+  assert.deepEqual(upstreamCalls.map((c) => c.body.models), [['a:free', 'b:free'], ['b:free']])
+})
+
+test('every model gone: our misconfiguration, not a bad request from the user', async () => {
+  reset()
+  upstreamStatus = { status: 404, body: '{"error":{"message":"No endpoints found for b:free."}}' }
+  const res = await chat()
+  assert.equal(res.status, 500)
+  assert.deepEqual(await res.json(), { error: { code: 'server_misconfigured' } })
+  assert.equal(upstreamCalls.length, 2)
+})
+
 test('error chunk after HTTP 200 becomes an error event, partial text already sent', async () => {
   reset()
   script = (c) => {

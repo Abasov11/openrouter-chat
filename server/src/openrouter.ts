@@ -11,9 +11,12 @@ export type UpstreamOptions = {
 
 export class UpstreamError extends Error {
   readonly error: ApiError
-  constructor(error: ApiError, detail?: string) {
+  /** This model is gone from the catalog; the next one may still work. */
+  readonly modelGone: boolean
+  constructor(error: ApiError, detail?: string, modelGone = false) {
     super(detail ?? error.code)
     this.error = error
+    this.modelGone = modelGone
   }
 }
 
@@ -129,6 +132,7 @@ export async function* streamCompletion(
 }
 
 // Worth asking another model. A bad key or a malformed request fails the same way everywhere.
+// A model gone from the catalog is retried too (UpstreamError.modelGone), though its code is server_misconfigured.
 const RETRYABLE = new Set<ErrorCode>(['rate_limited', 'timeout', 'upstream_unavailable'])
 
 /** At most this many models per question: the browser's wait budget is sized for it. */
@@ -166,7 +170,7 @@ export async function* streamWithFallback(
     } catch (err) {
       tried.add(models[0])
       const rest = opts.models.filter((m) => !tried.has(m))
-      const retryable = err instanceof UpstreamError && RETRYABLE.has(err.error.code)
+      const retryable = err instanceof UpstreamError && (RETRYABLE.has(err.error.code) || err.modelGone)
       if (signal.aborted || visible || !retryable || !rest.length || attempt >= MAX_ATTEMPTS) throw err
       console.warn(`[chat] ${err.message.slice(0, 200)}; retrying with ${rest[0]}`)
       models = rest
@@ -181,8 +185,13 @@ export function errorFromUpstream(status: number, body: string, retryAfterHeader
     const meta = JSON.parse(body)?.error?.metadata
     retryAfterSec ??= Number(meta?.retry_after_seconds) || undefined
   } catch {}
+  // Free models leave the catalog often. OpenRouter then rejects the whole request
+  // (400 "not a valid model ID", or 404 "No endpoints found") instead of falling back.
+  const modelGone = status === 404 || (status === 400 && /not a valid model/i.test(body))
   const code: ErrorCode =
-    status === 429
+    modelGone
+      ? 'server_misconfigured'
+      : status === 429
       ? 'rate_limited'
       : status === 408 || status === 504
         ? 'timeout'
@@ -192,5 +201,5 @@ export function errorFromUpstream(status: number, body: string, retryAfterHeader
             ? 'server_misconfigured' // bad key, no credit, model removed — fix on our side
             : 'upstream_unavailable'
   const error: ApiError = code === 'rate_limited' && retryAfterSec ? { code, retryAfterSec } : { code }
-  return new UpstreamError(error, `upstream ${status}: ${body.slice(0, 300)}`)
+  return new UpstreamError(error, `upstream ${status}: ${body.slice(0, 300)}`, modelGone)
 }
