@@ -10,7 +10,28 @@ export type AppOptions = {
   upstream: UpstreamOptions
   staticRoot?: string // built client; omitted in dev, Vite serves it
   rateLimit?: { limit: number; windowMs: number }
+  maxStreamsPerClient?: number
   heartbeatMs?: number
+}
+
+// Defence in depth for the page: even if something slipped past markdown rendering,
+// the browser may run only our own scripts and talk only to our own server.
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self'",
+    "img-src 'self' data:", // data: is the favicon; no remote images, see Markdown.tsx
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'", // no clickjacking via an iframe
+  ].join('; '),
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY', // frame-ancestors for old browsers
+  'Cross-Origin-Opener-Policy': 'same-origin',
 }
 
 const STATUS: Record<ErrorCode, number> = {
@@ -24,8 +45,12 @@ const STATUS: Record<ErrorCode, number> = {
 
 export function createApp(opts: AppOptions) {
   const rateLimit = createRateLimiter(opts.rateLimit?.limit ?? 20, opts.rateLimit?.windowMs ?? 60_000)
+  // The per-minute limit alone lets one client hold 20 long streams open at once.
+  const maxStreams = opts.maxStreamsPerClient ?? 3
+  const openStreams = new Map<string, number>()
 
   return createServer(async (req, res) => {
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value)
     const { pathname } = new URL(req.url ?? '/', 'http://x')
     try {
       if (pathname === '/api/chat' && req.method === 'POST') return await handleChat(req, res)
@@ -42,8 +67,10 @@ export function createApp(opts: AppOptions) {
 
   async function handleChat(req: IncomingMessage, res: ServerResponse) {
     // Behind a reverse proxy this would be X-Forwarded-For from a trusted hop.
-    const limited = rateLimit(req.socket.remoteAddress ?? 'unknown')
+    const ip = req.socket.remoteAddress ?? 'unknown'
+    const limited = rateLimit(ip)
     if (!limited.ok) return sendError(res, { code: 'too_many_requests', retryAfterSec: limited.retryAfterSec })
+    if ((openStreams.get(ip) ?? 0) >= maxStreams) return sendError(res, { code: 'too_many_requests', retryAfterSec: 5 })
 
     // application/json forces a CORS preflight we never answer, so other sites can't use our key.
     if (!req.headers['content-type']?.startsWith('application/json')) return sendError(res, { code: 'bad_request' })
@@ -56,7 +83,13 @@ export function createApp(opts: AppOptions) {
 
     // 'close' on the response fires when the browser aborts (Stop, tab closed, network drop).
     const client = new AbortController()
-    res.on('close', () => client.abort())
+    openStreams.set(ip, (openStreams.get(ip) ?? 0) + 1)
+    res.on('close', () => {
+      client.abort()
+      const left = (openStreams.get(ip) ?? 1) - 1
+      if (left > 0) openStreams.set(ip, left)
+      else openStreams.delete(ip)
+    })
 
     const events = streamWithFallback(messages, client.signal, opts.upstream)
     let heartbeat: ReturnType<typeof setInterval> | undefined
