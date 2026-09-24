@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { ApiError, ErrorCode, StreamEvent } from '../../shared/protocol.ts'
 import { formatSse } from '../../shared/sse.ts'
-import { streamCompletion, UpstreamError, type UpstreamOptions } from './openrouter.ts'
+import { streamWithFallback, UpstreamError, type UpstreamOptions } from './openrouter.ts'
 import { createRateLimiter } from './rateLimit.ts'
 import { serveStatic } from './static.ts'
 import { LIMITS, parseChatRequest } from './validate.ts'
@@ -58,7 +58,7 @@ export function createApp(opts: AppOptions) {
     const client = new AbortController()
     res.on('close', () => client.abort())
 
-    const events = streamCompletion(messages, client.signal, opts.upstream)
+    const events = streamWithFallback(messages, client.signal, opts.upstream)
     let heartbeat: ReturnType<typeof setInterval> | undefined
     try {
       // Hold headers until the first event, so errors before the stream

@@ -82,6 +82,7 @@ function announce(last: MessageData | undefined): string {
   if (last?.role !== 'assistant') return ''
   switch (last.status) {
     case 'streaming':
+      if (last.retrying) return 'Модель не ответила, спрашиваем другую'
       return last.thinking ? 'Модель думает' : 'Модель печатает'
     case 'done':
       return 'Ответ получен'

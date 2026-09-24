@@ -128,6 +128,53 @@ export async function* streamCompletion(
   }
 }
 
+// Worth asking another model. A bad key or a malformed request fails the same way everywhere.
+const RETRYABLE = new Set<ErrorCode>(['rate_limited', 'timeout', 'upstream_unavailable'])
+
+/** At most this many models per question: the browser's wait budget is sized for it. */
+export const MAX_ATTEMPTS = 3
+
+/**
+ * streamCompletion, but if a model fails before its first visible token, the
+ * next model in the list gets the question. OpenRouter's own `models` fallback
+ * only covers errors before the stream opens; this covers the ones after it too
+ * (a reasoning model thinking itself into a 504, a 429 mid-queue).
+ * Once text is on screen we never switch: the answer would change voice midway.
+ *
+ * If the failed attempt had sent nothing yet, the retry is silent, so a final
+ * failure still reaches the browser as a real HTTP status. Otherwise the
+ * browser gets a `retry` event and can say what is going on.
+ */
+export async function* streamWithFallback(
+  messages: ChatMessage[],
+  signal: AbortSignal,
+  opts: UpstreamOptions,
+): AsyncGenerator<StreamEvent> {
+  const tried = new Set<string>()
+  let models = opts.models
+  for (let attempt = 1; ; attempt++) {
+    let sent = false
+    let visible = false
+    try {
+      for await (const event of streamCompletion(messages, signal, { ...opts, models })) {
+        if (event.type === 'meta') tried.add(event.model) // OpenRouter may have fallen back on its own
+        if (event.type === 'delta') visible = true
+        sent = true
+        yield event
+      }
+      return
+    } catch (err) {
+      tried.add(models[0])
+      const rest = opts.models.filter((m) => !tried.has(m))
+      const retryable = err instanceof UpstreamError && RETRYABLE.has(err.error.code)
+      if (signal.aborted || visible || !retryable || !rest.length || attempt >= MAX_ATTEMPTS) throw err
+      console.warn(`[chat] ${err.message.slice(0, 200)}; retrying with ${rest[0]}`)
+      models = rest
+      if (sent) yield { type: 'retry' }
+    }
+  }
+}
+
 export function errorFromUpstream(status: number, body: string, retryAfterHeader: string | null): UpstreamError {
   let retryAfterSec = Number(retryAfterHeader) || undefined
   try {

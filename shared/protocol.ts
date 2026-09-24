@@ -20,6 +20,7 @@ export type ApiError = { code: ErrorCode; retryAfterSec?: number }
 export type StreamEvent =
   | { type: 'meta'; model: string }
   | { type: 'thinking' } // reasoning model started thinking; sent once
+  | { type: 'retry' } // the model failed before saying anything; asking the next one
   | { type: 'delta'; text: string }
   | { type: 'done'; finishReason: string }
   | ({ type: 'error' } & ApiError)

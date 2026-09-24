@@ -27,7 +27,7 @@ export const Message = memo(function Message({ message: m, onRetry }: Props) {
             <span />
             <span />
           </span>
-          {m.thinking ? 'Модель думает…' : 'Модель печатает…'}
+          {typingLabel(m)}
         </p>
       ) : (
         m.content && (
@@ -58,3 +58,8 @@ export const Message = memo(function Message({ message: m, onRetry }: Props) {
     </li>
   )
 })
+
+function typingLabel(m: MessageData) {
+  if (m.retrying) return 'Модель не ответила, спрашиваем другую…'
+  return m.thinking ? 'Модель думает…' : 'Модель печатает…'
+}
