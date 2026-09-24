@@ -42,6 +42,34 @@ test('Stop button works the same and keeps focus on itself', async ({ page }) =>
   await expect(page.getByRole('button', { name: 'Отправить' })).toBeVisible()
 })
 
+test('New chat mid-stream really cancels the request and leaves a clean slate', async ({ page }) => {
+  await page.goto('/')
+  const aborted: string[] = []
+  page.on('requestfailed', (r) => r.url().endsWith('/api/chat') && aborted.push(r.failure()?.errorText ?? ''))
+  await ask(page, '[long] первый')
+  await expect(lastReply(page)).toContainText('слово3')
+  await page.getByRole('button', { name: 'Новый чат' }).click()
+  await expect(page.getByRole('heading', { name: 'С чего начнём?' })).toBeVisible()
+  await expect.poll(() => aborted.length).toBe(1) // not just hidden: the model stops generating
+  await page.waitForTimeout(300)
+  await expect(page.locator('.msg')).toHaveCount(0)
+})
+
+test('Retry on an old error while another reply streams does nothing; sending right after Stop works', async ({ page }) => {
+  await page.goto('/')
+  await ask(page, '[429] привет')
+  await expect(page.getByRole('alert')).toBeVisible()
+  await ask(page, '[long] второй')
+  await expect(lastReply(page)).toContainText('слово3')
+  await page.getByRole('button', { name: 'Повторить' }).click()
+  await expect(page.locator('.msg-assistant')).toHaveCount(2)
+  await expect(lastReply(page)).toContainText('слово8') // the streaming reply was not replaced
+  await page.keyboard.press('Escape')
+  await ask(page, 'сразу следом')
+  await expect(lastReply(page)).toContainText('тестовый')
+  await expect(page.locator('.msg-assistant')).toHaveCount(3)
+})
+
 test('429 from the free model: clear message and a working retry', async ({ page }) => {
   await page.goto('/')
   await ask(page, '[429] привет')
