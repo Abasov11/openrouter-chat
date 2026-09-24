@@ -1,0 +1,14 @@
+{
+  "name": "openrouter-chat",
+  "private": true,
+  "type": "module",
+  "workspaces": ["server", "web"],
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "dev": "node --run dev:server & npm run dev -w web",
+    "dev:server": "node --env-file-if-exists=.env --watch server/src/index.ts",
+    "build": "npm run build -w web",
+    "start": "NODE_ENV=production node --env-file-if-exists=.env server/src/index.ts",
+    "test": "npm test -w server && npm test -w web"
+  }
+}
