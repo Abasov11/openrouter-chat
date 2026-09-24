@@ -132,6 +132,7 @@ export async function* streamCompletion(
 }
 
 // Worth asking another model. A bad key or a malformed request fails the same way everywhere.
+// A model gone from the catalog is retried too (UpstreamError.modelGone), though its code is server_misconfigured.
 const RETRYABLE = new Set<ErrorCode>(['rate_limited', 'timeout', 'upstream_unavailable'])
 
 /** At most this many models per question: the browser's wait budget is sized for it. */
